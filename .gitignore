@@ -1,0 +1,12 @@
+__pycache__/
+build/
+dist/
+build_pkg/
+dist_pkg/
+dist_old/
+publish/
+_put*.json
+preview*.png
+*.pyc
+*.exe
+*.zip
