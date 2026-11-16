@@ -22,13 +22,9 @@ from PyQt5.QtGui import (QColor, QDesktopServices, QFont, QIcon, QImage,
 from PyQt5.QtWidgets import (QAbstractButton, QApplication, QGraphicsDropShadowEffect,
                              QLabel, QLineEdit, QMessageBox, QProgressBar,
                              QPushButton, QWidget)
-try:
-    from PyQt5.QtMultimedia import QMediaContent, QMediaPlayer, QMediaPlaylist
-except Exception:
-    QMediaContent = QMediaPlayer = QMediaPlaylist = None
 
 APP_NAME = "Arab SCUM Dark"
-APP_VERSION = "0.2.3"
+APP_VERSION = "0.2.4"
 SCUM_APP_ID = "513710"
 SERVER_CONNECT = "176.57.173.194:28802"
 YOUTUBE_URL = "https://www.youtube.com/@AboAdamH"
@@ -564,7 +560,6 @@ class PanelButton(QPushButton):
         self.danger = danger
         self._hover = 0.0
         self._phase = 0.0
-        self.muted = False
         self.setCursor(Qt.PointingHandCursor)
         self.setFont(font or label_font(9, 2.2))
         self._anim = QPropertyAnimation(self, b"hoverLevel", self)
@@ -638,15 +633,9 @@ class PanelButton(QPushButton):
             self._paint_youtube(p, r, enabled)
         elif self.kind == "fill":
             self._paint_fill(p, r, enabled)
-        elif self.kind == "audio":
-            self._paint_audio(p, r, enabled)
         else:
             self._paint_ghost(p, r, enabled)
         p.end()
-
-    def set_muted(self, value):
-        self.muted = bool(value)
-        self.update()
 
     def _paint_primary(self, p, r, enabled):
         path = chamfer_path(r, 13)
@@ -764,39 +753,6 @@ class PanelButton(QPushButton):
         p.setFont(self.font())
         p.drawText(r.adjusted(38, 0, 10, 0), Qt.AlignVCenter | Qt.AlignLeft, self.text())
 
-    def _paint_audio(self, p, r, enabled):
-        path = chamfer_path(r, 7)
-        p.setPen(Qt.NoPen)
-        p.setBrush(QColor(255, 255, 255, int(18 + 26 * self._hover) if enabled else 12))
-        p.drawPath(path)
-        p.setBrush(Qt.NoBrush)
-        p.setPen(QColor(255, 255, 255, 96 if enabled else 44))
-        p.drawPath(path)
-
-        cx, cy = r.center().x(), r.center().y()
-        if self.muted:
-            tint = QColor(255, 46, 77) if enabled else QColor(120, 70, 78)
-        else:
-            tint = QColor(207, 212, 218) if enabled else QColor(110, 118, 128)
-        p.setPen(Qt.NoPen)
-        p.setBrush(tint)
-        p.drawRect(QRectF(cx - 7.0, cy - 3.0, 4.0, 6.0))
-        p.drawPolygon(QPolygonF([QPointF(cx - 3.0, cy - 5.5),
-                                 QPointF(cx + 1.5, cy - 8.0),
-                                 QPointF(cx + 1.5, cy + 8.0),
-                                 QPointF(cx - 3.0, cy + 5.5)]))
-
-        pen = QPen(tint, 1.6)
-        pen.setCapStyle(Qt.RoundCap)
-        p.setPen(pen)
-        p.setBrush(Qt.NoBrush)
-        if self.muted:
-            p.drawLine(QPointF(cx + 4.5, cy - 3.5), QPointF(cx + 10.0, cy + 3.5))
-            p.drawLine(QPointF(cx + 10.0, cy - 3.5), QPointF(cx + 4.5, cy + 3.5))
-        else:
-            p.drawArc(QRectF(cx + 2.0, cy - 4.5, 7.0, 9.0), -60 * 16, 120 * 16)
-            p.drawArc(QRectF(cx + 2.0, cy - 7.5, 12.0, 15.0), -55 * 16, 110 * 16)
-
     def _paint_chroma(self, p, r):
         path = chamfer_path(r, 7)
         fill = QColor(220, 40, 62) if self.danger else QColor(255, 255, 255, 24)
@@ -890,7 +846,6 @@ class LauncherWindow(QWidget):
         self.launcher_check_signal.connect(self._apply_launcher_state)
         self.launcher_dl_signal.connect(self._apply_launcher_download)
         self._build_ui()
-        self._init_music()
         self._center()
         self._refresh_folder()
         self._build_scene()
@@ -1191,12 +1146,6 @@ class LauncherWindow(QWidget):
         sub.setGeometry(122, 64, 420, 18)
         sub.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
 
-        self.mute_btn = PanelButton("", "audio")
-        self.mute_btn.setParent(self)
-        self.mute_btn.setGeometry(968, 24, 32, 32)
-        self.mute_btn.setToolTip("Mute music")
-        self.mute_btn.clicked.connect(self.toggle_music)
-
         self.min_btn = PanelButton("\u2212", "chroma", font=QFont("Segoe UI", 10))
         self.min_btn.setParent(self)
         self.min_btn.setGeometry(1008, 24, 32, 32)
@@ -1300,34 +1249,6 @@ class LauncherWindow(QWidget):
         self.credit = CreditPlate()
         self.credit.setParent(self)
         self.credit.move(44, 613)
-
-    def _init_music(self):
-        try:
-            track = ASSET_DIR / "theme.m4a"
-            if QMediaPlayer is None or not track.exists():
-                self.mute_btn.setEnabled(False)
-                self.mute_btn.setToolTip("Music unavailable")
-                return
-            self._playlist = QMediaPlaylist(self)
-            self._playlist.addMedia(QMediaContent(QUrl.fromLocalFile(str(track))))
-            self._playlist.setPlaybackMode(QMediaPlaylist.Loop)
-            self.music = QMediaPlayer(self)
-            self.music.setPlaylist(self._playlist)
-            self.music.setVolume(70)
-            self.music.play()
-        except Exception:
-            log_line("music init failed:\n" + traceback.format_exc())
-            self.music = None
-            self.mute_btn.setEnabled(False)
-            self.mute_btn.setToolTip("Music unavailable")
-
-    def toggle_music(self):
-        if getattr(self, "music", None) is None:
-            return
-        muted = not self.mute_btn.muted
-        self.mute_btn.set_muted(muted)
-        self.music.setMuted(muted)
-        self.mute_btn.setToolTip("Unmute music" if muted else "Mute music")
 
     def open_youtube(self):
         QDesktopServices.openUrl(QUrl(YOUTUBE_URL))
@@ -1477,11 +1398,6 @@ class LauncherWindow(QWidget):
         QTimer.singleShot(300, self._quit_app)
 
     def _quit_app(self):
-        try:
-            if getattr(self, "music", None) is not None:
-                self.music.stop()
-        except Exception:
-            pass
         self._timer.stop()
         QApplication.instance().quit()
         os._exit(0)
