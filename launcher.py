@@ -24,7 +24,7 @@ from PyQt5.QtWidgets import (QAbstractButton, QApplication, QGraphicsDropShadowE
                              QPushButton, QWidget)
 
 APP_NAME = "Arab SCUM Dark"
-APP_VERSION = "0.2.4"
+APP_VERSION = "0.2.5"
 SCUM_APP_ID = "513710"
 SERVER_CONNECT = "176.57.173.194:28802"
 YOUTUBE_URL = "https://www.youtube.com/@AboAdamH"
@@ -243,57 +243,20 @@ def save_config(cfg):
         cfg.write(f)
 
 
-def spawn_cleanup_helper(pid):
-    args = [sys.executable]
-    if not getattr(sys, "frozen", False):
-        args.append(str(Path(__file__).resolve()))
-    args += ["--cleanup-after", str(pid)]
-    flags = 0
-    if os.name == "nt":
-        flags = getattr(subprocess, "DETACHED_PROCESS", 0x8) | \
-                getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
-    subprocess.Popen(args, close_fds=True, creationflags=flags,
-                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                     stderr=subprocess.DEVNULL)
-
-
-def wait_for_pid(pid):
-    if os.name == "nt":
-        import ctypes
-        SYNCHRONIZE = 0x00100000
-        handle = ctypes.windll.kernel32.OpenProcess(SYNCHRONIZE, False, pid)
-        if handle:
-            try:
-                ctypes.windll.kernel32.WaitForSingleObject(handle, 0xFFFFFFFF)
-            finally:
-                ctypes.windll.kernel32.CloseHandle(handle)
-        return
-    while True:
-        try:
-            os.kill(pid, 0)
-        except OSError:
-            return
-        time.sleep(2)
-
-
-def cleanup_after_game(pid):
-    wait_for_pid(pid)
-    cfg = load_config()
-    try:
-        files = [Path(p) for p in json.loads(cfg.get("mods", "files", fallback="[]"))]
-    except Exception:
-        files = []
-    removed = 0
-    for p in files:
-        try:
-            if p.is_file():
-                p.unlink()
-                removed += 1
-        except OSError:
-            pass
-    cfg["mods"]["files"] = "[]"
-    save_config(cfg)
-    log_line(f"cleanup helper: game {pid} exited, removed {removed} mod files")
+def inst_env(extra=None):
+    # The PyQt5 runtime hook and bootloader point PATH at this process's _MEI
+    # temp dir. Children inheriting that load DLLs from it, which blocks the
+    # temp dir cleanup on exit; re-executed copies also run inside it.
+    mei = (os.environ.get("_PYI_APPLICATION_HOME_DIR") or "").lower()
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith("_PYI") and k not in ("QT_PLUGIN_PATH", "QML2_IMPORT_PATH")}
+    if mei:
+        env["PATH"] = os.pathsep.join(
+            p for p in os.environ.get("PATH", "").split(os.pathsep)
+            if not p.lower().startswith(mei))
+    if extra:
+        env.update(extra)
+    return env
 
 
 class Toggle(QAbstractButton):
@@ -823,6 +786,7 @@ class LauncherWindow(QWidget):
         self.setWindowIcon(QIcon(str(ASSET_DIR / "icon_app.png")))
         self._drag = None
         self._busy = False
+        self._game_proc = None
         self._t = 0.0
         self._last = time.perf_counter()
         self._sparks = []
@@ -1377,7 +1341,7 @@ class LauncherWindow(QWidget):
             return
         scum = self.paks.parent.parent / "Binaries" / "Win64" / "SCUM.exe"
         args = [str(scum), "-fileopenlog", "-nobattleye", "-connect", SERVER_CONNECT]
-        env = dict(os.environ, SteamAppId=SCUM_APP_ID, SteamGameId=SCUM_APP_ID)
+        env = inst_env({"SteamAppId": SCUM_APP_ID, "SteamGameId": SCUM_APP_ID})
         try:
             proc = subprocess.Popen(
                 args, cwd=str(scum.parent), env=env,
@@ -1386,21 +1350,27 @@ class LauncherWindow(QWidget):
         except Exception as exc:
             self._set_status(f"Launch failed: {exc}", True)
             return
+        self._game_proc = proc
         self._busy_state(True, "GAME RUNNING")
-        if not self.keep_toggle.isChecked():
-            try:
-                spawn_cleanup_helper(proc.pid)
-            except Exception as exc:
-                log_line(f"cleanup helper failed: {exc}")
-            self._set_status("Game started. Mods will be removed when you quit SCUM.")
+        if self.keep_toggle.isChecked():
+            self._set_status("Game started. Launcher will close when you quit SCUM.")
         else:
-            self._set_status("Game started. Closing launcher...")
-        QTimer.singleShot(300, self._quit_app)
-
-    def _quit_app(self):
+            self._set_status("Game started. Mods will be removed when you quit SCUM.")
+        self.hide()
         self._timer.stop()
-        QApplication.instance().quit()
-        os._exit(0)
+        QTimer.singleShot(1000, self._watch_game)
+
+    def _watch_game(self):
+        # Stay alive (hidden) while SCUM runs: exiting now would leave the game
+        # holding DLLs from our onefile temp dir, so its cleanup would fail.
+        if self._game_proc.poll() is None:
+            QTimer.singleShot(1000, self._watch_game)
+            return
+        if not self.keep_toggle.isChecked():
+            removed = self._delete_managed_files()
+            log_line(f"removed {removed} mod files after game exit")
+        self._timer.stop()
+        QTimer.singleShot(2500, QApplication.instance().quit)
 
     def _manifest_path(self):
         for name in ("mod_manifest.json", "launcher_mod_manifest.json"):
@@ -1624,7 +1594,7 @@ class LauncherWindow(QWidget):
             except Exception:
                 os.replace(old, exe)
                 raise
-            subprocess.Popen([str(exe)])
+            subprocess.Popen([str(exe)], env=inst_env())
             self.launcher_check_signal.emit("restart", None)
         except Exception as exc:
             try:
@@ -1675,13 +1645,6 @@ def main():
     sys.excepthook = log_hook
     threading.excepthook = _thread_hook
     cleanup_old_exe()
-    if "--cleanup-after" in sys.argv:
-        try:
-            pid = int(sys.argv[sys.argv.index("--cleanup-after") + 1])
-        except (ValueError, IndexError):
-            return 2
-        cleanup_after_game(pid)
-        return 0
     try:
         import faulthandler
         CFG_DIR.mkdir(parents=True, exist_ok=True)
