@@ -24,7 +24,7 @@ from PyQt5.QtWidgets import (QAbstractButton, QApplication, QGraphicsDropShadowE
                              QPushButton, QWidget)
 
 APP_NAME = "Arab SCUM Dark"
-APP_VERSION = "0.2.5"
+APP_VERSION = "0.2.6"
 SCUM_APP_ID = "513710"
 SERVER_CONNECT = "176.57.173.194:28802"
 YOUTUBE_URL = "https://www.youtube.com/@AboAdamH"
@@ -1428,6 +1428,14 @@ class LauncherWindow(QWidget):
         installed = []
         try:
             mods_dir.mkdir(parents=True, exist_ok=True)
+            root = mods_dir.resolve()
+            for rel in manifest.get("obsolete", []):
+                stale = (root / Path(str(rel)).name)
+                if stale.is_file():
+                    try:
+                        stale.unlink()
+                    except OSError:
+                        pass
             for item in items:
                 rel = Path(item["path"])
                 dest = (mods_dir / rel).resolve()
